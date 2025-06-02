@@ -451,11 +451,19 @@ export default function Home() {
         <Button
           onClick={() => {
             const csvContent =
-              "Student,Type,Location,Time\n" +
+              "Student,Period,Type,Location,Time\n" +
               activityLog
                 .map(
                   (activity) =>
-                    `${activity.student},${activity.checkInTime ? "check-in" : "check-out"},${activity.location},${activity.checkOutTime}`
+                    `${typeof activity.student === 'string' 
+                        ? activity.student 
+                        : activity.student.name},${
+                      typeof activity.student === 'string'
+                        ? '?' 
+                        : activity.student.period},${
+                      activity.checkInTime ? "check-in" : "check-out"},${
+                      activity.location},${
+                      activity.checkOutTime}`
                 )
                 .join("\n");
             const blob = new Blob([csvContent], { type: "text/csv" });
