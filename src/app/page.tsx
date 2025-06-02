@@ -20,8 +20,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-const defaultStudents = [
-  "Import Students",
+type Student = {
+  name: string;
+  period: number;
+};
+
+const defaultStudents: Student[] = [
+  { name: "Import Students", period: 1 }
 ];
 
 const locations = [
@@ -32,8 +37,10 @@ const locations = [
   "Other",
 ];
 
+const periods = [1, 2, 3, 4, 5, 6, 7];
+
 type Activity = {
-  student: string;
+  student: Student | string;  // Update to allow both Student object and string
   location: string;
   checkInTime?: string;
   checkOutTime: string;
@@ -41,8 +48,8 @@ type Activity = {
 };
 
 export default function Home() {
-  const [selectedStudent, setSelectedStudent] = useState<string | null>(null);
-  const [students, setStudents] = useState<string[]>([]);
+  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+  const [students, setStudents] = useState<Student[]>([]);
   const [studentFile, setStudentFile] = useState<File | null>(null);
   const [activityLog, setActivityLog] = useState<Activity[]>([]);
   const [checkOutTime, setCheckOutTime] = useState<string | null>(null);
@@ -50,6 +57,7 @@ export default function Home() {
   const [saveName, setSaveName] = useState("");
   const [savedLogs, setSavedLogs] = useState<string[]>([]);
   const [selectedLog, setSelectedLog] = useState<string | null>(null);
+  const [selectedPeriod, setSelectedPeriod] = useState<number | null>(null);
 
   useEffect(() => {
     const storedActivityLog = localStorage.getItem("activityLog");
@@ -109,19 +117,29 @@ export default function Home() {
 
     const reader = new FileReader();
 
+    // Modify the reader.onload function in handleImportCSV
     reader.onload = async (e) => {
       try {
         const text = e.target?.result as string;
         if (text) {
           const lines = text.split('\n');
           const newStudents = lines
-            .map(line => line.split(',')[0].trim())
-            .filter(name => name !== "" && name.toLowerCase() !== "student"); // Also filter out header if present
+            .map(line => {
+              const [name, period] = line.split(',').map(item => item.trim());
+              if (name && name.toLowerCase() !== "student") {
+                return {
+                  name,
+                  period: parseInt(period) || 1
+                };
+              }
+              return null;
+            })
+            .filter((student): student is Student => student !== null);
           
           if (newStudents.length === 0) {
             toast({
               title: "Empty File or No Names",
-              description: "The CSV file is empty or does not contain any student names in the first column.",
+              description: "The CSV file is empty or does not contain any student names.",
               variant: "default", 
             });
           } else {
@@ -182,7 +200,7 @@ export default function Home() {
     setCheckOutTime(checkOutTime);
 
     const newActivity: Activity = {
-      student: selectedStudent,
+      student: selectedStudent.name,
       location: location,
       checkOutTime: checkOutTime,
       checkInTime: undefined,
@@ -193,7 +211,7 @@ export default function Home() {
 
     toast({
       title: "Check-out Successful",
-      description: `${selectedStudent} checked out to ${location} at ${checkOutTime}.`,
+      description: `${selectedStudent.name} checked out to ${location} at ${checkOutTime}.`,
     });
   };
 
@@ -211,7 +229,7 @@ export default function Home() {
     const checkInTime = now.toLocaleTimeString();
 
     const lastCheckOut = activityLog.find(
-      (activity) => activity.student === selectedStudent && !activity.checkInTime
+      (activity) => activity.student === selectedStudent.name && !activity.checkInTime
     );
 
     if (lastCheckOut) {
@@ -237,7 +255,7 @@ export default function Home() {
 
       const updatedActivityLog = activityLog.map((activity) => {
         if (
-          activity.student === selectedStudent &&
+          activity.student === selectedStudent.name &&
           activity.checkOutTime === lastCheckOut.checkOutTime &&
           !activity.checkInTime
         ) {
@@ -258,13 +276,13 @@ export default function Home() {
 
     toast({
       title: "Check-in Successful",
-      description: `${selectedStudent} checked in at ${checkInTime}.`,
+      description: `${selectedStudent.name} checked in at ${checkInTime}.`,
     });
   };
 
   const isStudentCheckedOut = selectedStudent
     ? activityLog.some(
-        (activity) => activity.student === selectedStudent && !activity.checkInTime
+        (activity) => activity.student === selectedStudent.name && !activity.checkInTime
       )
     : false;
 
@@ -345,18 +363,40 @@ export default function Home() {
           <CardTitle>Student Check-in/Check-out</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col space-y-4">
-          <Select onValueChange={setSelectedStudent}>
-            <SelectTrigger>
-              <SelectValue placeholder="Select Student" />
-            </SelectTrigger>
-            <SelectContent>
-              {students.map((student) => (
-                <SelectItem key={student} value={student}>
-                  {student}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="space-y-4">
+            <Select onValueChange={(value) => setSelectedPeriod(parseInt(value))}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select Period" />
+              </SelectTrigger>
+              <SelectContent>
+                {periods.map((period) => (
+                  <SelectItem key={period} value={period.toString()}>
+                    Period {period}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {selectedPeriod && (
+              <Select onValueChange={(value) => {
+                const student = students.find(s => s.name === value && s.period === selectedPeriod);
+                setSelectedStudent(student || null);
+              }}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select Student" />
+                </SelectTrigger>
+                <SelectContent>
+                  {students
+                    .filter(student => student.period === selectedPeriod)
+                    .map((student) => (
+                      <SelectItem key={student.name} value={student.name}>
+                        {student.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
 
           {selectedStudent && !isStudentCheckedOut && (
             <div className="grid grid-cols-3 gap-2">
@@ -393,13 +433,18 @@ export default function Home() {
                 activityLog.map((activity, index) => (
                   <div key={index} className="mb-2">
                     <p className="text-sm">
-                      {activity.student} checked out to {activity.location} at {activity.checkOutTime}
+                      {typeof activity.student === 'string' 
+                        ? activity.student 
+                        : activity.student.name}
+                      {' '}(Period {typeof activity.student === 'string' 
+                        ? '?' 
+                        : activity.student.period}) checked out to {activity.location} at {activity.checkOutTime}
                       {activity.checkInTime ? ` and checked in at ${activity.checkInTime} for ${activity.duration}` : null}
                     </p>
                     {index !== activityLog.length - 1 && <Separator />}
                   </div>
                 ))
-              )}
+              }
             </div>
           </ScrollArea>
         </CardContent>
