@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useState, useEffect, useRef } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -148,7 +147,7 @@ export default function Home() {
     if (event.target.files && event.target.files[0]) {
       const file = event.target.files[0];
       setStudentFile(file);
-      processStudentFile(file);
+      importStudentsFromFile(file);
     }
   };
   // Reusable import function that accepts a File and imports student names
@@ -210,6 +209,49 @@ export default function Home() {
       return;
     }
     await importStudentsFromFile(studentFile);
+  };
+
+  // Activity CSV import helpers
+  const activityFileInputRef = useRef<HTMLInputElement | null>(null);
+  const handleActivityFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files[0]) {
+      const file = event.target.files[0];
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const text = reader.result as string;
+          if (!text) {
+            toast({ title: "Error", description: "Could not read the file content.", variant: "destructive" });
+            return;
+          }
+          // Expecting same format previously exported: Student,Type,Location,Time
+          const lines = text.split(/\r?\n/).filter(Boolean);
+          const imported: Activity[] = lines.slice(1).map((line) => {
+            const [student, type, location, time] = line.split(',');
+            return {
+              id: generateId(),
+              student: (student || '').trim(),
+              location: (location || '').trim(),
+              checkOutTime: (time || '').trim(),
+              checkInTime: type?.includes('check-in') ? (time || '').trim() : undefined,
+            } as Activity;
+          }).filter(a => a.student);
+
+          if (imported.length === 0) {
+            toast({ title: "Empty File or No Entries", description: "No activities found in the CSV.", variant: "default" });
+          } else {
+            setActivityLog((prev) => [...imported, ...prev]);
+            toast({ title: "Import Successful", description: `${imported.length} activity(ies) imported.`, variant: "default" });
+          }
+        } catch (e) {
+          toast({ title: "File Read Error", description: "Could not process the selected file.", variant: "destructive" });
+        }
+      };
+      reader.onerror = () => {
+        toast({ title: "File Read Error", description: "Could not read the selected file.", variant: "destructive" });
+      };
+      reader.readAsText(file);
+    }
   };
 
   const handleCheckOut = (location: string) => {
@@ -418,7 +460,7 @@ export default function Home() {
               type="file"
               accept=".csv"
               onChange={(e) => {
-                handleFileChange(e as React.ChangeEvent<HTMLInputElement>);
+                handleStudentFileChange(e as React.ChangeEvent<HTMLInputElement>);
                 if (e.target.files && e.target.files[0]) {
                   importStudentsFromFile(e.target.files[0]);
                 }
