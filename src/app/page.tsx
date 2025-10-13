@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,6 +33,7 @@ const locations = [
 ];
 
 type Activity = {
+  id: string;
   student: string;
   location: string;
   checkInTime?: string;
@@ -40,10 +41,52 @@ type Activity = {
   duration?: string;
 };
 
+function generateId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function parseTimeStringToISOString(timeStr?: string): string | undefined {
+  if (!timeStr) return undefined;
+  // If it already looks like ISO and parses, return normalized ISO
+  if (/\d{4}-\d{2}-\d{2}T/.test(timeStr)) {
+    const d = new Date(timeStr);
+    return isNaN(d.getTime()) ? undefined : d.toISOString();
+  }
+
+  const parsed = Date.parse(timeStr);
+  if (!isNaN(parsed)) return new Date(parsed).toISOString();
+
+  // Try to parse time-only strings like "10:23:45" or "1:05 PM"
+  const m = timeStr.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM|am|pm)?/);
+  if (m) {
+    let hour = parseInt(m[1], 10);
+    const minute = parseInt(m[2], 10);
+    const second = m[3] ? parseInt(m[3], 10) : 0;
+    const ampm = m[4];
+    if (ampm) {
+      if (/pm/i.test(ampm) && hour < 12) hour += 12;
+      if (/am/i.test(ampm) && hour === 12) hour = 0;
+    }
+    const d = new Date();
+    d.setHours(hour, minute, second, 0);
+    return d.toISOString();
+  }
+
+  return undefined;
+}
+
+function formatIsoTime(iso?: string) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleTimeString();
+}
+
 export default function Home() {
   const [selectedStudent, setSelectedStudent] = useState<string | null>(null);
   const [students, setStudents] = useState<string[]>([]);
   const [studentFile, setStudentFile] = useState<File | null>(null);
+  const studentFileInputRef = useRef<HTMLInputElement | null>(null);
   const [activityLog, setActivityLog] = useState<Activity[]>([]);
   const [checkOutTime, setCheckOutTime] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -54,7 +97,23 @@ export default function Home() {
   useEffect(() => {
     const storedActivityLog = localStorage.getItem("activityLog");
     if (storedActivityLog) {
-      setActivityLog(JSON.parse(storedActivityLog));
+      // Backfill ids for any legacy activities that don't have them
+      try {
+        const parsed: Activity[] = JSON.parse(storedActivityLog);
+        const withIdsAndIso = parsed.map((a) => {
+          const checkOutIso = parseTimeStringToISOString(a.checkOutTime);
+          const checkInIso = parseTimeStringToISOString(a.checkInTime);
+          return {
+            ...a,
+            id: (a as any).id || generateId(),
+            checkOutTime: checkOutIso || a.checkOutTime,
+            checkInTime: checkInIso || a.checkInTime,
+          } as Activity;
+        });
+        setActivityLog(withIdsAndIso);
+      } catch (e) {
+        setActivityLog([]);
+      }
     }
 
     const storedStudentList = localStorage.getItem("studentList");
@@ -82,89 +141,134 @@ export default function Home() {
     }
   }, [students]);
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files) {
-      setStudentFile(event.target.files[0]);
+  // Student CSV import: auto-process on file selection
+  const handleStudentFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files[0]) {
+      const file = event.target.files[0];
+      setStudentFile(file);
+      processStudentFile(file);
     }
   };
 
-  const handleImportCSV = async () => {
-    if (!studentFile) {
-      toast({
-        title: "Error",
-        description: "Please select a file first.",
-        variant: "destructive",
-      });
+  // Activity CSV import: auto-process on file selection
+  const [activityFile, setActivityFile] = useState<File | null>(null);
+  const activityFileInputRef = useRef<HTMLInputElement | null>(null);
+  const handleActivityFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files[0]) {
+      const file = event.target.files[0];
+      setActivityFile(file);
+      processActivityFile(file);
+    }
+  };
+
+  // Process a student CSV file (expects student names in first column)
+  const processStudentFile = (file: File) => {
+    if (!file) {
+      toast({ title: "Error", description: "No file selected.", variant: "destructive" });
       return;
     }
 
-    if (studentFile.type !== "text/csv") {
-      toast({
-        title: "Invalid File Type",
-        description: "Please upload a .csv file.",
-        variant: "destructive",
-      });
+    const isCsvByMime = file.type === "text/csv";
+    const isCsvByExt = file.name && file.name.toLowerCase().endsWith(".csv");
+    if (!isCsvByMime && !isCsvByExt) {
+      toast({ title: "Invalid File Type", description: "Please upload a .csv file.", variant: "destructive" });
       return;
     }
 
     const reader = new FileReader();
-
-    reader.onload = async (e) => {
+    reader.onload = () => {
       try {
-        const text = e.target?.result as string;
+        const text = reader.result as string;
         if (text) {
-          const lines = text.split('\n');
+          const lines = text.split(/\r?\n/).filter(Boolean);
           const newStudents = lines
-            .map(line => line.split(',')[0].trim())
-            .filter(name => name !== "" && name.toLowerCase() !== "student"); // Also filter out header if present
-          
+            .map((line) => line.split(",")[0].trim())
+            .filter((name) => name !== "" && name.toLowerCase() !== "student");
+
           if (newStudents.length === 0) {
-            toast({
-              title: "Empty File or No Names",
-              description: "The CSV file is empty or does not contain any student names in the first column.",
-              variant: "default", 
-            });
+            toast({ title: "Empty File or No Names", description: "The CSV file is empty or does not contain any student names.", variant: "default" });
           } else {
             setStudents(newStudents);
-            toast({
-              title: "Import Successful",
-              description: `${newStudents.length} student(s) imported successfully.`,
-              variant: "default",
-            });
+            toast({ title: "Import Successful", description: `${newStudents.length} student(s) imported successfully.`, variant: "default" });
           }
         } else {
-          toast({
-            title: "Error",
-            description: "Could not read the file content.",
-            variant: "destructive",
-          });
+          toast({ title: "Error", description: "Could not read the file content.", variant: "destructive" });
         }
-      } catch (error) {
-        toast({
-          title: "File Read Error",
-          description: "Could not process the selected file.", // More generic message for processing
-          variant: "destructive",
-        });
+      } catch (e) {
+        toast({ title: "File Read Error", description: "Could not process the selected file.", variant: "destructive" });
       }
     };
-
     reader.onerror = () => {
-      toast({
-        title: "File Read Error",
-        description: "Could not read the selected file.",
-        variant: "destructive",
-      });
+      toast({ title: "File Read Error", description: "Could not read the selected file.", variant: "destructive" });
     };
+    reader.readAsText(file);
+  };
 
-    try {
-      reader.readAsText(studentFile);
-    } catch (error) {
-      toast({
-        title: "File Read Error",
-        description: "Could not read the selected file.",
-        variant: "destructive",
-      });
+  // Process an activity CSV file (expects rows: Student,Type,Location,Time)
+  const processActivityFile = (file: File) => {
+    if (!file) {
+      toast({ title: "Error", description: "No file selected.", variant: "destructive" });
+      return;
     }
+
+    const isCsvByMime = file.type === "text/csv";
+    const isCsvByExt = file.name && file.name.toLowerCase().endsWith(".csv");
+    if (!isCsvByMime && !isCsvByExt) {
+      toast({ title: "Invalid File Type", description: "Please upload a .csv file.", variant: "destructive" });
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = reader.result as string;
+        if (!text) {
+          toast({ title: "Error", description: "Could not read the file content.", variant: "destructive" });
+          return;
+        }
+
+        const lines = text.split(/\r?\n/).filter(Boolean);
+        const parsedActivities: Activity[] = [];
+        for (const line of lines) {
+          const cols = line.split(",").map((c) => c.trim());
+          if (cols.length < 4) continue;
+          const [student, type, location, time] = cols;
+          const isCheckIn = type.toLowerCase().includes("check-in") || type.toLowerCase().includes("checkin");
+          const coIso = isCheckIn ? undefined : parseTimeStringToISOString(time) || time;
+          const ciIso = isCheckIn ? parseTimeStringToISOString(time) || time : undefined;
+          const act: Activity = {
+            id: generateId(),
+            student: student,
+            location: location,
+            checkOutTime: coIso || "",
+            checkInTime: ciIso,
+            duration: undefined,
+          };
+          // If both times present compute duration
+          if (act.checkOutTime && act.checkInTime) {
+            const co = new Date(act.checkOutTime);
+            const ci = new Date(act.checkInTime);
+            const durationMin = Math.round((ci.getTime() - co.getTime()) / 60000);
+            act.duration = `${durationMin} minutes`;
+          }
+          parsedActivities.push(act);
+        }
+
+        if (parsedActivities.length === 0) {
+          toast({ title: "Empty or Invalid File", description: "No valid activity rows found.", variant: "default" });
+        } else {
+          // Prepend parsed activities
+          setActivityLog((prev) => [...parsedActivities, ...prev]);
+          toast({ title: "Import Successful", description: `${parsedActivities.length} activity row(s) imported.`, variant: "default" });
+        }
+      } catch (e) {
+        toast({ title: "File Read Error", description: "Could not process the selected file.", variant: "destructive" });
+      }
+    };
+    reader.onerror = () => {
+      toast({ title: "File Read Error", description: "Could not read the selected file.", variant: "destructive" });
+    };
+    reader.readAsText(file);
   };
 
   const handleCheckOut = (location: string) => {
@@ -177,14 +281,15 @@ export default function Home() {
       return;
     }
 
-    const now = new Date();
-    const checkOutTime = now.toLocaleTimeString();
-    setCheckOutTime(checkOutTime);
+  const now = new Date();
+  const checkOutIso = now.toISOString();
+  setCheckOutTime(checkOutIso);
 
     const newActivity: Activity = {
+      id: generateId(),
       student: selectedStudent,
       location: location,
-      checkOutTime: checkOutTime,
+      checkOutTime: checkOutIso,
       checkInTime: undefined,
       duration: undefined,
     };
@@ -193,7 +298,7 @@ export default function Home() {
 
     toast({
       title: "Check-out Successful",
-      description: `${selectedStudent} checked out to ${location} at ${checkOutTime}.`,
+      description: `${selectedStudent} checked out to ${location} at ${new Date(checkOutIso).toLocaleTimeString()}.`,
     });
   };
 
@@ -207,43 +312,29 @@ export default function Home() {
       return;
     }
 
-    const now = new Date();
-    const checkInTime = now.toLocaleTimeString();
+  const now = new Date();
+  const checkInIso = now.toISOString();
 
-    const lastCheckOut = activityLog.find(
+    // Find the most recent activity for the selected student that has no checkInTime
+    const lastCheckOut = [...activityLog].find(
       (activity) => activity.student === selectedStudent && !activity.checkInTime
     );
 
     if (lastCheckOut) {
-      const checkOutDate = new Date();
-      checkOutDate.setHours(
-        parseInt(lastCheckOut.checkOutTime.split(":")[0])
-      );
-      checkOutDate.setMinutes(
-        parseInt(lastCheckOut.checkOutTime.split(":")[1])
-      );
-      checkOutDate.setSeconds(
-        parseInt(lastCheckOut.checkOutTime.split(":")[2])
-      );
-
-      const checkInDate = new Date();
-      checkInDate.setHours(parseInt(checkInTime.split(":")[0]));
-      checkInDate.setMinutes(parseInt(checkInTime.split(":")[1]));
-      checkInDate.setSeconds(parseInt(checkInTime.split(":")[2]));
-
-      const durationMs = checkInDate.getTime() - checkOutDate.getTime();
+      // Compute duration from ISO timestamps (or fallback to parsing legacy)
+      const coIso = parseTimeStringToISOString(lastCheckOut.checkOutTime) || lastCheckOut.checkOutTime;
+      const ciIso = checkInIso;
+      const coDate = new Date(coIso);
+      const ciDate = new Date(ciIso);
+      const durationMs = ciDate.getTime() - coDate.getTime();
       const durationMin = Math.round(durationMs / 60000);
       const duration = `${durationMin} minutes`;
 
       const updatedActivityLog = activityLog.map((activity) => {
-        if (
-          activity.student === selectedStudent &&
-          activity.checkOutTime === lastCheckOut.checkOutTime &&
-          !activity.checkInTime
-        ) {
+        if (activity.id === lastCheckOut.id) {
           return {
             ...activity,
-            checkInTime: checkInTime,
+            checkInTime: checkInIso,
             duration: duration,
           };
         }
@@ -258,7 +349,7 @@ export default function Home() {
 
     toast({
       title: "Check-in Successful",
-      description: `${selectedStudent} checked in at ${checkInTime}.`,
+      description: `${selectedStudent} checked in at ${new Date(checkInIso).toLocaleTimeString()}.`,
     });
   };
 
@@ -321,7 +412,23 @@ export default function Home() {
 
     const loadedLog = localStorage.getItem(`activityLog_${selectedLog}`);
     if (loadedLog) {
-      setActivityLog(JSON.parse(loadedLog));
+      try {
+        const parsed: Activity[] = JSON.parse(loadedLog);
+        const normalized = parsed.map((a) => ({
+          ...a,
+          id: (a as any).id || generateId(),
+          checkOutTime: parseTimeStringToISOString(a.checkOutTime) || a.checkOutTime,
+          checkInTime: parseTimeStringToISOString(a.checkInTime) || a.checkInTime,
+        }));
+        setActivityLog(normalized as Activity[]);
+      } catch (e) {
+        toast({
+          title: "Error",
+          description: "Could not parse the selected log.",
+          variant: "destructive",
+        });
+        return;
+      }
       toast({
         title: "Load Successful",
         description: `Activity log ${selectedLog} loaded.`,
@@ -345,7 +452,7 @@ export default function Home() {
           <CardTitle>Student Check-in/Check-out</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col space-y-4">
-          <Select onValueChange={setSelectedStudent}>
+          <Select onValueChange={setSelectedStudent} value={selectedStudent || ""}>
             <SelectTrigger>
               <SelectValue placeholder="Select Student" />
             </SelectTrigger>
@@ -357,6 +464,24 @@ export default function Home() {
               ))}
             </SelectContent>
           </Select>
+
+          {/* Hidden file input for student import and visible button to trigger it */}
+          <input
+            ref={studentFileInputRef}
+            id="student-file-input"
+            type="file"
+            accept=".csv"
+            style={{ display: "none" }}
+            onChange={handleStudentFileChange}
+          />
+          <div className="flex items-center space-x-2">
+            <Button
+              onClick={() => studentFileInputRef.current?.click()}
+              className="bg-primary text-primary-foreground hover:bg-primary/80"
+            >
+              Import Students
+            </Button>
+          </div>
 
           {selectedStudent && !isStudentCheckedOut && (
             <div className="grid grid-cols-3 gap-2">
@@ -391,10 +516,10 @@ export default function Home() {
                 <p className="text-muted-foreground">No activity yet.</p>
               ) : (
                 activityLog.map((activity, index) => (
-                  <div key={index} className="mb-2">
+                  <div key={activity.id} className="mb-2">
                     <p className="text-sm">
-                      {activity.student} checked out to {activity.location} at {activity.checkOutTime}
-                      {activity.checkInTime ? ` and checked in at ${activity.checkInTime} for ${activity.duration}` : null}
+                      {activity.student} checked out to {activity.location} at {formatIsoTime(activity.checkOutTime)}
+                      {activity.checkInTime ? ` and checked in at ${formatIsoTime(activity.checkInTime)} for ${activity.duration}` : null}
                     </p>
                     {index !== activityLog.length - 1 && <Separator />}
                   </div>
@@ -408,10 +533,10 @@ export default function Home() {
             const csvContent =
               "Student,Type,Location,Time\n" +
               activityLog
-                .map(
-                  (activity) =>
-                    `${activity.student},${activity.checkInTime ? "check-in" : "check-out"},${activity.location},${activity.checkOutTime}`
-                )
+                .map((activity) => {
+                  const time = activity.checkInTime ? formatIsoTime(activity.checkInTime) : formatIsoTime(activity.checkOutTime);
+                  return `${activity.student},${activity.checkInTime ? "check-in" : "check-out"},${activity.location},${time}`;
+                })
                 .join("\n");
             const blob = new Blob([csvContent], { type: "text/csv" });
             const url = URL.createObjectURL(blob);
@@ -426,7 +551,7 @@ export default function Home() {
           Export as CSV
         </Button>
          <div className="flex justify-between mt-4">
-          <Dialog open={open} onOpenChange={setOpen}>
+          <Dialog open={open} onOpenChange={setOpen}> {/* Uses open, setOpen from useSavedLogs */}
             <DialogTrigger asChild>
               <Button variant="outline">Save Activity Log</Button>
             </DialogTrigger>
@@ -444,28 +569,22 @@ export default function Home() {
                   </Label>
                   <Input
                     id="name"
-                    value={saveName}
-                    onChange={(e) => setSaveName(e.target.value)}
+                    value={saveName} /* Uses saveName from useSavedLogs */
+                    onChange={(e) => setSaveName(e.target.value)} /* Uses setSaveName from useSavedLogs */
                     className="col-span-3"
                   />
                 </div>
               </div>
              
-              <Button onClick={handleSaveActivityLog}>Save</Button>
+              <Button onClick={handleSaveActivityLog}>Save</Button> {/* Uses handleSaveActivityLog from useSavedLogs */}
             
             </DialogContent>
           </Dialog>
           <Button
-            onClick={handleClearActivityLog}
+            onClick={handleClearActivityLog} /* Uses handleClearActivityLog from useSavedLogs */
             className="bg-destructive hover:bg-destructive-foreground text-destructive-foreground"
           >
             Clear Activity Log
-          </Button>
-                    <Button
-            onClick={handleClearStudentList}
-            className="bg-destructive hover:bg-destructive-foreground text-destructive-foreground"
-          >
-            Clear Student Names
           </Button>
         </div>
       </Card>
@@ -475,10 +594,13 @@ export default function Home() {
           <CardTitle>Import Activity Log</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col space-y-4">
-          <Input type="file" accept=".csv" className="text-muted-foreground" onChange={handleFileChange} />
-          <Button className="bg-primary text-primary-foreground hover:bg-primary/80" onClick={handleImportCSV}>
-            Import CSV
-          </Button>
+          <input
+            ref={activityFileInputRef}
+            type="file"
+            accept=".csv"
+            className="text-muted-foreground"
+            onChange={handleActivityFileChange}
+          />
         </CardContent>
       </Card>
 
@@ -487,16 +609,16 @@ export default function Home() {
           <CardTitle>Saved Activity Logs</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col space-y-4">
-          {savedLogs.length === 0 ? (
+          {savedLogs.length === 0 ? ( /* Uses savedLogs from useSavedLogs */
             <p className="text-muted-foreground">No saved logs yet.</p>
           ) : (
             <div className="flex items-center space-x-2">
-              <Select onValueChange={setSelectedLog}>
+              <Select onValueChange={setSelectedLog}> {/* Uses setSelectedLog from useSavedLogs */}
                 <SelectTrigger>
                   <SelectValue placeholder="Select Log" />
                 </SelectTrigger>
                 <SelectContent>
-                  {savedLogs.map((log) => (
+                  {savedLogs.map((log) => ( /* Uses savedLogs from useSavedLogs */
                     <SelectItem key={log} value={log}>
                       {log}
                     </SelectItem>
@@ -504,7 +626,7 @@ export default function Home() {
                 </SelectContent>
               </Select>
               <Button
-                onClick={handleLoadActivityLog}
+                onClick={handleLoadActivityLog} /* Uses handleLoadActivityLog from useSavedLogs */
                 className="bg-accent text-background hover:bg-accent-foreground"
               >
                 Load Log
