@@ -10,11 +10,14 @@ export const parseStudentCSV = (csvText: string): string[] => {
 
 export const exportActivityLogToCSV = (activityLog: Activity[]): void => {
   const csvContent =
-    "Student,Type,Location,Time\n" + // Header row
+    "Student,Location,TimeOut,TimeIn\n" + // Header row
     activityLog
       .map(
         (activity) =>
-          `${activity.student},${activity.checkInTime ? "check-in" : "check-out"},${activity.location},${activity.checkOutTime}`
+          `${activity.student},
+        ${activity.location},
+        ${activity.checkOutTime},
+        ${activity.checkInTime}`
       )
       .join("\n");
   const blob = new Blob([csvContent], { type: "text/csv" });
